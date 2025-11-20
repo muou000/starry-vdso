@@ -6,7 +6,7 @@ global_asm!("
     .section .data
     .balign 4096
 vdso_start:
-    .incbin \"vdso\\vdso_rv.so\"
+    .incbin \"vdso/vdso_rv.so\"
     .balign 4096
 vdso_end:
 
@@ -19,7 +19,7 @@ global_asm!("
     .section .data
     .balign 4096
 vdso_start:
-    .incbin \"vdso\\vdso_la.so\"
+    .incbin \"vdso/vdso_la.so\"
     .balign 4096
 vdso_end:
 
@@ -32,7 +32,7 @@ global_asm!("
     .section .data
     .balign 4096
 vdso_start:
-    .incbin \"vdso\\vdso_aarch.so\"
+    .incbin \"vdso/vdso_aarch.so\"
     .balign 4096
 vdso_end:
 
@@ -45,13 +45,9 @@ global_asm!("
     .section .data
     .balign 4096
 vdso_start:
-    .incbin \"vdso\\vdso_x86.so\"
+    .incbin \"vdso/vdso_x86.so\"
     .balign 4096
 vdso_end:
 
     .previous
 ");
-
-pub fn embed_vdso() {
-    return;
-}
