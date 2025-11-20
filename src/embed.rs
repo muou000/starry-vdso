@@ -9,7 +9,8 @@ vdso_start:
     .incbin \"vdso/vdso_rv.so\"
     .balign 4096
 vdso_end:
-
+    .type vdso_start, @object
+    .type vdso_end, @object
     .previous
 ");
 
@@ -22,7 +23,8 @@ vdso_start:
     .incbin \"vdso/vdso_la.so\"
     .balign 4096
 vdso_end:
-
+    .type vdso_start, @object
+    .type vdso_end, @object
     .previous
 ");
 
@@ -35,7 +37,8 @@ vdso_start:
     .incbin \"vdso/vdso_aarch.so\"
     .balign 4096
 vdso_end:
-
+    .type vdso_start, @object
+    .type vdso_end, @object
     .previous
 ");
 
@@ -48,6 +51,7 @@ vdso_start:
     .incbin \"vdso/vdso_x86.so\"
     .balign 4096
 vdso_end:
-
+    .type vdso_start, @object
+    .type vdso_end, @object
     .previous
 ");
