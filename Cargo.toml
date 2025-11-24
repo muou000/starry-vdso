@@ -1,0 +1,8 @@
+[package]
+name = "starry-vdso"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+kernel-elf-parser = { git = "https://github.com/Starry-OS/kernel_elf_parser.git", rev = "fdcce74" }
+axerrno = { git = "https://github.com/Starry-OS/axerrno.git", rev = "f1e2bca" }
