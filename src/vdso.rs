@@ -1,5 +1,6 @@
 //! vDSO data management.
-
+extern crate axlog;
+extern crate alloc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
@@ -227,7 +228,7 @@ impl VdsoData {
 
             if clk.seq.load(Ordering::Relaxed) < 10 {
                 let cycle_val = clk.cycle_last.load(Ordering::Relaxed);
-                trace!(
+                axlog::trace!(
                     "vDSO update: seq={}, cycle_last={}, mono_ns={}, mult={}, shift={}",
                     clk.seq.load(Ordering::Relaxed),
                     cycle_val,
@@ -251,6 +252,7 @@ pub fn init_vdso_data() {
     unsafe {
         let data_ptr = core::ptr::addr_of_mut!(VDSO_DATA);
         (*data_ptr).update();
+        axlog::info!("vDSO data initialized at {:#x}", data_ptr as usize);
     }
 }
 
@@ -307,6 +309,7 @@ fn map_vdso_segments(
     vdso_page_offset: usize,
     uspace: &mut AddrSpace,
 ) -> AxResult<()> {
+    axlog::info!("vDSO ELF parsed successfully, mapping segments");
     for ph in headers.ph.iter().filter(|ph| ph.get_type() == Ok(xmas_elf::program::Type::Load)) {
         let vaddr = ph.virtual_addr as usize;
         let seg_pad = vaddr.align_offset_4k();
@@ -340,7 +343,7 @@ fn map_vvar_and_push_aux(auxv: &mut Vec<AuxEntry>, vdso_user_addr: usize, uspace
     use crate::config::VVAR_PAGES;
     let vvar_user_addr = vdso_user_addr - VVAR_PAGES * PAGE_SIZE_4K;
     let vvar_paddr = if VVAR_PAGES == 1 {
-        crate::vdso::vdso_data_paddr()
+        vdso_data_paddr()
     } else {
         let num_pages = VVAR_PAGES;
         let alloc_vaddr = match global_allocator().alloc_pages(num_pages, PAGE_SIZE_4K, UsageKind::Global) {
@@ -369,6 +372,13 @@ fn map_vvar_and_push_aux(auxv: &mut Vec<AuxEntry>, vdso_user_addr: usize, uspace
         )
         .map_err(|_| AxError::InvalidExecutable)?;
 
+    axlog::info!(
+        "Mapped vvar pages at user {:#x}..{:#x} -> paddr {:#x}",
+        vvar_user_addr,
+        vvar_user_addr + VVAR_PAGES * PAGE_SIZE_4K,
+        vvar_paddr,
+    );
+
     let aux_pair: (AuxType, usize) = (AuxType::SYSINFO_EHDR, vdso_user_addr);
     let aux_entry: AuxEntry = unsafe { core::mem::transmute(aux_pair) };
     auxv.push(aux_entry);
@@ -378,7 +388,7 @@ fn map_vvar_and_push_aux(auxv: &mut Vec<AuxEntry>, vdso_user_addr: usize, uspace
 
 /// Load vDSO into the given user address space and update auxv accordingly.
 pub fn load_vdso_data(auxv: &mut Vec<AuxEntry>, uspace: &mut AddrSpace) -> AxResult<()> {
-    let (vdso_start, vdso_end) = unsafe { starry_vdso::embed::init_vdso_symbols() };
+    let (vdso_start, vdso_end) = unsafe { crate::embed::init_vdso_symbols() };
     let (vdso_kstart, vdso_kend) = (vdso_start, vdso_end);
 
     const VDSO_USER_ADDR_BASE: usize = 0x7f00_0000;
@@ -396,8 +406,10 @@ pub fn load_vdso_data(auxv: &mut Vec<AuxEntry>, uspace: &mut AddrSpace) -> AxRes
     };
     let page_off = (rnd() % (VDSO_ASLR_PAGES as u64)) as usize;
     let vdso_user_addr = VDSO_USER_ADDR_BASE + page_off * PAGE_SIZE_4K;
+    axlog::info!("vdso_kstart: {vdso_kstart:#x}, vdso_kend: {vdso_kend:#x}",);
 
     if vdso_kend <= vdso_kstart {
+        axlog::warn!("vDSO binary is missing or invalid: vdso_kstart={vdso_kstart:#x}, vdso_kend={vdso_kend:#x}. vDSO will not be loaded and AT_SYSINFO_EHDR will not be set.");
         return Err(AxError::InvalidExecutable);
     }
 
@@ -410,6 +422,7 @@ pub fn load_vdso_data(auxv: &mut Vec<AuxEntry>, uspace: &mut AddrSpace) -> AxRes
         Ok(headers) => map_vdso_segments(headers, vdso_user_addr, vdso_paddr_page, vdso_page_offset, uspace)?,
         Err(_) => {
             // Fallback: map the whole vdso region as RX if parsing fails.
+            axlog::info!("vDSO ELF parsing failed, using fallback mapping");
             uspace
                 .map_linear(
                     vdso_user_addr.into(),
