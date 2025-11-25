@@ -14,6 +14,8 @@ use axmm::AddrSpace;
 use kernel_elf_parser::{AuxEntry, AuxType};
 use memory_addr::{MemoryAddr, PAGE_SIZE_4K};
 use axalloc::{global_allocator, UsageKind};
+use rand::{SeedableRng, RngCore};
+use rand_chacha::ChaCha12Rng;
 
 /// Clock mode constants
 const VDSO_CLOCKMODE_NONE: i32 = 0;
@@ -170,17 +172,17 @@ impl VdsoData {
                         let (mult, shift) = mult_shift;
                         clk.mult = mult;
                         clk.shift = shift;
-                        clk.cycle_last.store(0, Ordering::Relaxed);
                         clk.basetime[1].sec = 0;
                         clk.basetime[1].nsec = 0;
+                        clk.cycle_last.store(0, Ordering::Relaxed);
                     } else {
                         let (mult, shift) = mult_shift;
                         if !(mult == u32::MAX && shift == 0) {
                             clk.mult = mult;
                             clk.shift = shift;
-                            clk.cycle_last.store(cycle_now, Ordering::Relaxed);
                             clk.basetime[1].sec = mono_ns / NANOS_PER_SEC;
                             clk.basetime[1].nsec = mono_ns % NANOS_PER_SEC;
+                            clk.cycle_last.store(cycle_now, Ordering::Relaxed);
                         } else {
                             let delta_cycles = (cycle_now.wrapping_sub(prev_cycle)) & clk.mask;
                             let delta_ns = mono_ns.saturating_sub(prev_basetime_ns);
@@ -188,9 +190,9 @@ impl VdsoData {
                                 let (mult, shift) = clocks_calc_mult_shift(delta_cycles, delta_ns, 1);
                                 clk.mult = mult;
                                 clk.shift = shift;
-                                clk.cycle_last.store(cycle_now, Ordering::Relaxed);
                                 clk.basetime[1].sec = mono_ns / NANOS_PER_SEC;
                                 clk.basetime[1].nsec = mono_ns % NANOS_PER_SEC;
+                                clk.cycle_last.store(cycle_now, Ordering::Relaxed);
                             }
                         }
                     }
@@ -200,23 +202,23 @@ impl VdsoData {
                     // TODO: Implement PV clock (paravirt/pvclock) support.
                     clk.mult = 0;
                     clk.shift = 32;
-                    clk.cycle_last.store(0, Ordering::Relaxed);
                     clk.basetime[1].sec = mono_ns / NANOS_PER_SEC;
                     clk.basetime[1].nsec = mono_ns % NANOS_PER_SEC;
+                    clk.cycle_last.store(0, Ordering::Relaxed);
                 }
                 VDSO_CLOCKMODE_NONE => {
                     // No cycle->ns conversion; store direct monotonic ns.
                     clk.mult = 0;
-                    clk.cycle_last.store(0, Ordering::Relaxed);
                     clk.basetime[1].sec = mono_ns / NANOS_PER_SEC;
                     clk.basetime[1].nsec = mono_ns % NANOS_PER_SEC;
+                    clk.cycle_last.store(0, Ordering::Relaxed);
                 }
                 _ => {
                     // Unknown/unsupported clock mode; treat like NONE.
                     clk.mult = 0;
-                    clk.cycle_last.store(0, Ordering::Relaxed);
                     clk.basetime[1].sec = mono_ns / NANOS_PER_SEC;
                     clk.basetime[1].nsec = mono_ns % NANOS_PER_SEC;
+                    clk.cycle_last.store(0, Ordering::Relaxed);
                 }
             }
 
@@ -342,6 +344,7 @@ fn map_vdso_segments(
 fn map_vvar_and_push_aux(auxv: &mut Vec<AuxEntry>, vdso_user_addr: usize, uspace: &mut AddrSpace) -> AxResult<()> {
     use crate::config::VVAR_PAGES;
     let vvar_user_addr = vdso_user_addr - VVAR_PAGES * PAGE_SIZE_4K;
+    let mut alloc_vaddr_op: Option<usize> = None;
     let vvar_paddr = if VVAR_PAGES == 1 {
         vdso_data_paddr()
     } else {
@@ -350,6 +353,7 @@ fn map_vvar_and_push_aux(auxv: &mut Vec<AuxEntry>, vdso_user_addr: usize, uspace
             Ok(a) => a,
             Err(_) => return Err(AxError::InvalidExecutable),
         };
+        alloc_vaddr_op = Some(alloc_vaddr);
         let dest = alloc_vaddr as *mut u8;
         let src = core::ptr::addr_of!(VDSO_DATA) as *const u8;
         let copy_len = core::mem::size_of::<VdsoData>();
@@ -363,14 +367,30 @@ fn map_vvar_and_push_aux(auxv: &mut Vec<AuxEntry>, vdso_user_addr: usize, uspace
         virt_to_phys(alloc_vaddr.into()).into()
     };
 
-    uspace
-        .map_linear(
-            vvar_user_addr.into(),
-            vvar_paddr.into(),
-            VVAR_PAGES * PAGE_SIZE_4K,
-            MappingFlags::READ | MappingFlags::USER,
-        )
-        .map_err(|_| AxError::InvalidExecutable)?;
+    if VVAR_PAGES > 1 {
+        if let Err(_) = uspace
+            .map_linear(
+                vvar_user_addr.into(),
+                vvar_paddr.into(),
+                VVAR_PAGES * PAGE_SIZE_4K,
+                MappingFlags::READ | MappingFlags::USER,
+            )
+        {
+            if let Some(a) = alloc_vaddr_op {
+                global_allocator().dealloc_pages(a, VVAR_PAGES, UsageKind::Global);
+            }
+            return Err(AxError::InvalidExecutable);
+        }
+    } else {
+        uspace
+            .map_linear(
+                vvar_user_addr.into(),
+                vvar_paddr.into(),
+                VVAR_PAGES * PAGE_SIZE_4K,
+                MappingFlags::READ | MappingFlags::USER,
+            )
+            .map_err(|_| AxError::InvalidExecutable)?;
+    }
 
     axlog::info!(
         "Mapped vvar pages at user {:#x}..{:#x} -> paddr {:#x}",
@@ -379,8 +399,7 @@ fn map_vvar_and_push_aux(auxv: &mut Vec<AuxEntry>, vdso_user_addr: usize, uspace
         vvar_paddr,
     );
 
-    let aux_pair: (AuxType, usize) = (AuxType::SYSINFO_EHDR, vdso_user_addr);
-    let aux_entry: AuxEntry = unsafe { core::mem::transmute(aux_pair) };
+    let aux_entry = AuxEntry::new(AuxType::SYSINFO_EHDR, vdso_user_addr);
     auxv.push(aux_entry);
 
     Ok(())
@@ -394,17 +413,8 @@ pub fn load_vdso_data(auxv: &mut Vec<AuxEntry>, uspace: &mut AddrSpace) -> AxRes
     const VDSO_USER_ADDR_BASE: usize = 0x7f00_0000;
     const VDSO_ASLR_PAGES: usize = 256;
 
-    let rnd = || {
-        let seed = (axhal::time::current_ticks() as u64) ^ (vdso_kstart as u64);
-        let stack_addr = (&vdso_kstart as *const usize as u64).wrapping_shr(4);
-        let data_addr = (core::ptr::addr_of!(VDSO_DATA) as usize as u64).wrapping_shr(4);
-        let x = seed.wrapping_add(stack_addr).wrapping_add(data_addr).wrapping_add(0x9E3779B97F4A7C15);
-        let mut z = x;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
-        z ^ (z >> 31)
-    };
-    let page_off = (rnd() % (VDSO_ASLR_PAGES as u64)) as usize;
+    let mut rng = ChaCha12Rng::from_seed([0u8; 32]);
+    let page_off: usize = (rng.next_u64() as usize) % VDSO_ASLR_PAGES;
     let vdso_user_addr = VDSO_USER_ADDR_BASE + page_off * PAGE_SIZE_4K;
     axlog::info!("vdso_kstart: {vdso_kstart:#x}, vdso_kend: {vdso_kend:#x}",);
 

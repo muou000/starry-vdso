@@ -5,10 +5,13 @@ edition = "2024"
 
 [dependencies]
 kernel-elf-parser = { git = "https://github.com/Starry-OS/kernel_elf_parser.git", rev = "fdcce74" }
-axerrno = { git = "https://github.com/Starry-OS/axerrno.git", rev = "f1e2bca" }
+axerrno = { workspace = true }
 axhal = { workspace = true }
 axmm = { workspace = true }
 memory_addr = { workspace = true }
 axalloc = { workspace = true }
 axlog = { workspace = true }
 xmas-elf = "0.9"
+rand = { version = "0.8", default-features = false }
+rand_chacha = { version = "0.3", default-features = false }
+axsync = { workspace = true }
