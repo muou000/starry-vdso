@@ -98,7 +98,7 @@ impl VdsoClock {
     pub const fn new() -> Self {
         Self {
             seq: AtomicU32::new(0),
-            clock_mode: VDSO_CLOCKMODE_TSC,
+            clock_mode: VDSO_CLOCKMODE::VDSO_CLOCKMODE_TSC as i32,
             cycle_last: AtomicU64::new(0),
             mask: u64::MAX,
             mult: 0,
@@ -165,7 +165,7 @@ impl VdsoData {
                 .wrapping_add(clk.basetime[1].nsec);
 
             match clk.clock_mode {
-                VDSO_CLOCKMODE_TSC => {
+                val if val == VDSO_CLOCKMODE::VDSO_CLOCKMODE_TSC as i32 => {
                     if prev_cycle == 0 {
                         let (mult, shift) = mult_shift;
                         clk.mult = mult;
@@ -196,7 +196,7 @@ impl VdsoData {
                     }
                 }
 
-                VDSO_CLOCKMODE_PVCLOCK => {
+                val if val == VDSO_CLOCKMODE::VDSO_CLOCKMODE_PVCLOCK as i32=> {
                     // TODO: Implement PV clock (paravirt/pvclock) support.
                     clk.mult = 0;
                     clk.shift = 32;
@@ -204,7 +204,7 @@ impl VdsoData {
                     clk.basetime[1].nsec = mono_ns % NANOS_PER_SEC;
                     clk.cycle_last.store(0, Ordering::Relaxed);
                 }
-                VDSO_CLOCKMODE_NONE => {
+                val if val == VDSO_CLOCKMODE::VDSO_CLOCKMODE_NONE as i32=> {
                     // No cycle->ns conversion; store direct monotonic ns.
                     clk.mult = 0;
                     clk.basetime[1].sec = mono_ns / NANOS_PER_SEC;
