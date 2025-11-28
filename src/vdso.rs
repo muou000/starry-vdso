@@ -12,10 +12,13 @@ use axplat::{
 };
 
 const PAGE_SIZE_4K: usize = 4096;
+
 /// Clock mode constants
-const VDSO_CLOCKMODE_NONE: i32 = 0;
-const VDSO_CLOCKMODE_TSC: i32 = 1;
-const VDSO_CLOCKMODE_PVCLOCK: i32 = 2;
+enum VDSO_CLOCKMODE {
+    VDSO_CLOCKMODE_NONE,
+    VDSO_CLOCKMODE_TSC,
+    VDSO_CLOCKMODE_PVCLOCK,
+}
 
 /// Number of clock bases
 const VDSO_BASES: usize = 16;
