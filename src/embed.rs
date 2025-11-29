@@ -7,7 +7,11 @@ macro_rules! include_vdso {
             ".section .data\n",
             ".balign 4096\n",
             "vdso_start:\n",
-            ".incbin \"", env!("CARGO_MANIFEST_DIR"), "/vdso/vdso_", $arch, ".so\"\n",
+            ".incbin \"",
+            env!("CARGO_MANIFEST_DIR"),
+            "/vdso/vdso_",
+            $arch,
+            ".so\"\n",
             ".balign 4096\n",
             "vdso_end:\n",
             ".previous"
@@ -43,8 +47,8 @@ pub unsafe fn init_vdso_symbols() -> (usize, usize) {
         static vdso_end: usize;
     }
     unsafe {
-    VDSO_START = &vdso_start as *const usize as usize;
-    VDSO_END = &vdso_end as *const usize as usize;
-    (VDSO_START, VDSO_END)
+        VDSO_START = &vdso_start as *const usize as usize;
+        VDSO_END = &vdso_end as *const usize as usize;
+        (VDSO_START, VDSO_END)
     }
 }

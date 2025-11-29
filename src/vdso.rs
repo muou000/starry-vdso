@@ -1,30 +1,32 @@
 //! vDSO data management.
-extern crate log;
 extern crate alloc;
-use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use core::alloc::Layout;
+extern crate log;
 use alloc::alloc::{alloc_zeroed, dealloc};
+use core::{
+    alloc::Layout,
+    sync::atomic::{AtomicU32, AtomicU64, Ordering},
+};
 
 use axerrno::{AxError, AxResult};
 use axplat::{
     mem::virt_to_phys,
-    time::{NANOS_PER_SEC, current_ticks, monotonic_time_nanos, wall_time_nanos, nanos_to_ticks},
+    time::{NANOS_PER_SEC, current_ticks, monotonic_time_nanos, nanos_to_ticks, wall_time_nanos},
 };
 
 const PAGE_SIZE_4K: usize = 4096;
 
 /// Clock mode constants
-enum VDSO_CLOCKMODE {
-    VDSO_CLOCKMODE_NONE,
-    VDSO_CLOCKMODE_TSC,
-    VDSO_CLOCKMODE_PVCLOCK,
+pub(crate) enum VdsoClockMode {
+    None,
+    Tsc,
 }
 
 /// Number of clock bases
 const VDSO_BASES: usize = 16;
 
-/// Compute multiplier and shift to convert from timer_frequency to nanos_per_sec.
-fn clocks_calc_mult_shift(from: u64, to: u64, maxsec: u32) -> (u32, u32) {
+/// Compute multiplier and shift to convert from timer_frequency to
+/// nanos_per_sec.
+pub fn clocks_calc_mult_shift(from: u64, to: u64, maxsec: u32) -> (u32, u32) {
     // sftacc starts at 32 and is reduced based on the maximum conversion range
     let mut tmp = ((maxsec as u64).wrapping_mul(from)) >> 32;
     let mut sftacc: i32 = 32;
@@ -71,25 +73,65 @@ impl VdsoTimestamp {
     }
 }
 
-/// vDSO clock data structure
+// Architecture-specific VdsoClock definitions
+
+#[cfg(target_arch = "x86_64")]
 #[repr(C)]
 #[derive(Default)]
 pub struct VdsoClock {
-    /// Sequence counter for lockless reads
     pub seq: AtomicU32,
-    /// Clock mode
-    pub clock_mode: i32,
-    /// Last cycle counter value
+    pub version: u32,
     pub cycle_last: AtomicU64,
-    /// Clocksource mask
     pub mask: u64,
-    /// Multiplier for cycle to nanoseconds conversion
     pub mult: u32,
-    /// Shift for cycle to nanoseconds conversion
     pub shift: u32,
-    /// Base time for each clock
     pub basetime: [VdsoTimestamp; VDSO_BASES],
-    /// Unused
+    pub clock_mode: i32,
+    pub _unused: u32,
+}
+
+#[cfg(target_arch = "aarch64")]
+#[repr(C)]
+#[derive(Default)]
+pub struct VdsoClock {
+    pub seq: AtomicU32,
+    pub version: u32,
+    pub cycle_last: AtomicU64,
+    pub mask: u64,
+    pub mult: u32,
+    pub shift: u32,
+    pub basetime: [VdsoTimestamp; VDSO_BASES],
+    pub clock_mode: i32,
+    pub _unused: u32,
+}
+
+#[cfg(target_arch = "riscv64")]
+#[repr(C)]
+#[derive(Default)]
+pub struct VdsoClock {
+    pub seq: AtomicU32,
+    pub version: u32,
+    pub cycle_last: AtomicU64,
+    pub mask: u64,
+    pub mult: u32,
+    pub shift: u32,
+    pub basetime: [VdsoTimestamp; VDSO_BASES],
+    pub clock_mode: i32,
+    pub _unused: u32,
+}
+
+#[cfg(target_arch = "loongarch64")]
+#[repr(C)]
+#[derive(Default)]
+pub struct VdsoClock {
+    pub seq: AtomicU32,
+    pub version: u32,
+    pub cycle_last: AtomicU64,
+    pub mask: u64,
+    pub mult: u32,
+    pub shift: u32,
+    pub basetime: [VdsoTimestamp; VDSO_BASES],
+    pub clock_mode: i32,
     pub _unused: u32,
 }
 
@@ -98,42 +140,62 @@ impl VdsoClock {
     pub const fn new() -> Self {
         Self {
             seq: AtomicU32::new(0),
-            clock_mode: VDSO_CLOCKMODE::VDSO_CLOCKMODE_TSC as i32,
+            version: 1, // non-zero to indicate available
             cycle_last: AtomicU64::new(0),
             mask: u64::MAX,
             mult: 0,
             shift: 32,
             basetime: [VdsoTimestamp::new(); VDSO_BASES],
+            clock_mode: VdsoClockMode::Tsc as i32,
             _unused: 0,
         }
     }
 
-    fn write_seqcount_begin(&self) {
+    pub(crate) fn write_seqcount_begin(&self) {
         let seq = self.seq.load(Ordering::Relaxed);
         self.seq.store(seq.wrapping_add(1), Ordering::Release);
         core::sync::atomic::fence(Ordering::SeqCst);
     }
 
-    fn write_seqcount_end(&self) {
+    pub(crate) fn write_seqcount_end(&self) {
         core::sync::atomic::fence(Ordering::SeqCst);
         let seq = self.seq.load(Ordering::Relaxed);
         self.seq.store(seq.wrapping_add(1), Ordering::Release);
     }
-
 }
 
-/// Main vDSO data placed in `.data` (aligned to 4K)
+// Architecture-specific VdsoData definitions
+
+#[cfg(target_arch = "x86_64")]
+#[repr(C)]
+#[repr(align(4096))]
+pub struct VdsoData {
+    pub _pad: [u8; 128],
+    pub clocks: [VdsoClock; 2],
+    pub tz_minuteswest: i32,
+    pub tz_dsttime: i32,
+    pub hrtimer_res: u32,
+}
+
+#[cfg(target_arch = "aarch64")]
+#[repr(C)]
+#[repr(align(4096))]
+pub struct VdsoData {
+    pub clocks: [VdsoClock; 2],
+    pub _unused: [u8; 1648],
+    pub tz_minuteswest: i32,
+    pub tz_dsttime: i32,
+    pub hrtimer_res: u32,
+}
+
+#[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
 #[repr(C)]
 #[repr(align(4096))]
 #[derive(Default)]
 pub struct VdsoData {
-    /// Clock data
     pub clocks: [VdsoClock; 2],
-    /// Timezone minutes west of Greenwich
     pub tz_minuteswest: i32,
-    /// Timezone DST time
     pub tz_dsttime: i32,
-    /// High-resolution timer resolution in nanoseconds
     pub hrtimer_res: u32,
 }
 
@@ -141,7 +203,11 @@ impl VdsoData {
     /// Create a new VdsoData with default values.
     pub const fn new() -> Self {
         Self {
+            #[cfg(target_arch = "x86_64")]
+            _pad: [0; 128],
             clocks: [VdsoClock::new(), VdsoClock::new()],
+            #[cfg(target_arch = "aarch64")]
+            _unused: [0; 1648],
             tz_minuteswest: 0,
             tz_dsttime: 0,
             hrtimer_res: 1,
@@ -150,96 +216,118 @@ impl VdsoData {
 
     /// Update vDSO clocks and basetimes.
     pub fn update(&mut self) {
-        let cycle_now = current_ticks();
-        let wall_ns = wall_time_nanos();
-        let mono_ns = monotonic_time_nanos();
+        #[cfg(any(
+            target_arch = "loongarch64",
+            target_arch = "riscv64",
+            target_arch = "aarch64"
+        ))]
+        {
+            update_vdso(self);
+            return;
+        }
+        #[cfg(target_arch = "x86_64")]
+        {
+            update_vdso_x86(self);
+            return;
+        }
+    }
+}
 
-        let ticks_per_sec = nanos_to_ticks(NANOS_PER_SEC);
-        let mult_shift = clocks_calc_mult_shift(ticks_per_sec, NANOS_PER_SEC, 10);
+/// Update vDSO data
+pub fn update_vdso(data: &mut VdsoData) {
+    let cycle_now = current_ticks();
+    let wall_ns = wall_time_nanos();
+    let mono_ns = monotonic_time_nanos();
 
-        for clk in &mut self.clocks {
-            clk.write_seqcount_begin();
+    let ticks_per_sec = nanos_to_ticks(NANOS_PER_SEC);
+    let mult_shift = clocks_calc_mult_shift(ticks_per_sec, NANOS_PER_SEC, 10);
 
-            let prev_cycle = clk.cycle_last.load(Ordering::Relaxed);
-            let prev_basetime_ns = clk.basetime[1].sec.wrapping_mul(NANOS_PER_SEC)
-                .wrapping_add(clk.basetime[1].nsec);
+    for clk in &mut data.clocks {
+        clk.write_seqcount_begin();
+        update_vdso_clock(clk, cycle_now, wall_ns, mono_ns, mult_shift);
+        clk.write_seqcount_end();
+    }
+}
 
-            match clk.clock_mode {
-                val if val == VDSO_CLOCKMODE::VDSO_CLOCKMODE_TSC as i32 => {
-                    if prev_cycle == 0 {
-                        let (mult, shift) = mult_shift;
+/// Update vDSO clock.
+pub fn update_vdso_clock(
+    clk: &mut VdsoClock,
+    cycle_now: u64,
+    wall_ns: u64,
+    mono_ns: u64,
+    mult_shift: (u32, u32),
+) {
+    let prev_cycle = clk.cycle_last.load(Ordering::Relaxed);
+    let prev_basetime_ns = clk.basetime[1]
+        .sec
+        .wrapping_mul(NANOS_PER_SEC)
+        .wrapping_add(clk.basetime[1].nsec);
+
+    match clk.clock_mode {
+        val if val == VdsoClockMode::Tsc as i32 => {
+            if prev_cycle == 0 {
+                let (mult, shift) = mult_shift;
+                clk.mult = mult;
+                clk.shift = shift;
+                clk.basetime[1].sec = mono_ns / NANOS_PER_SEC;
+                clk.basetime[1].nsec = (mono_ns % NANOS_PER_SEC) << shift;
+                clk.cycle_last.store(cycle_now, Ordering::Relaxed);
+            } else {
+                let (mult, shift) = mult_shift;
+                if !(mult == u32::MAX && shift == 0) {
+                    clk.mult = mult;
+                    clk.shift = shift;
+                    clk.basetime[1].sec = mono_ns / NANOS_PER_SEC;
+                    clk.basetime[1].nsec = (mono_ns % NANOS_PER_SEC) << shift;
+                    clk.cycle_last.store(cycle_now, Ordering::Relaxed);
+                } else {
+                    let delta_cycles = (cycle_now.wrapping_sub(prev_cycle)) & clk.mask;
+                    let delta_ns = mono_ns.saturating_sub(prev_basetime_ns);
+                    if delta_cycles != 0 && delta_ns > 0 {
+                        let (mult, shift) = clocks_calc_mult_shift(delta_cycles, delta_ns, 1);
                         clk.mult = mult;
                         clk.shift = shift;
-                        clk.basetime[1].sec = 0;
-                        clk.basetime[1].nsec = 0;
-                        clk.cycle_last.store(0, Ordering::Relaxed);
-                    } else {
-                        let (mult, shift) = mult_shift;
-                        if !(mult == u32::MAX && shift == 0) {
-                            clk.mult = mult;
-                            clk.shift = shift;
-                            clk.basetime[1].sec = mono_ns / NANOS_PER_SEC;
-                            clk.basetime[1].nsec = mono_ns % NANOS_PER_SEC;
-                            clk.cycle_last.store(cycle_now, Ordering::Relaxed);
-                        } else {
-                            let delta_cycles = (cycle_now.wrapping_sub(prev_cycle)) & clk.mask;
-                            let delta_ns = mono_ns.saturating_sub(prev_basetime_ns);
-                            if delta_cycles != 0 && delta_ns > 0 {
-                                let (mult, shift) = clocks_calc_mult_shift(delta_cycles, delta_ns, 1);
-                                clk.mult = mult;
-                                clk.shift = shift;
-                                clk.basetime[1].sec = mono_ns / NANOS_PER_SEC;
-                                clk.basetime[1].nsec = mono_ns % NANOS_PER_SEC;
-                                clk.cycle_last.store(cycle_now, Ordering::Relaxed);
-                            }
-                        }
+                        clk.basetime[1].sec = mono_ns / NANOS_PER_SEC;
+                        clk.basetime[1].nsec = (mono_ns % NANOS_PER_SEC) << shift;
+                        clk.cycle_last.store(cycle_now, Ordering::Relaxed);
                     }
                 }
-
-                val if val == VDSO_CLOCKMODE::VDSO_CLOCKMODE_PVCLOCK as i32=> {
-                    // TODO: Implement PV clock (paravirt/pvclock) support.
-                    clk.mult = 0;
-                    clk.shift = 32;
-                    clk.basetime[1].sec = mono_ns / NANOS_PER_SEC;
-                    clk.basetime[1].nsec = mono_ns % NANOS_PER_SEC;
-                    clk.cycle_last.store(0, Ordering::Relaxed);
-                }
-                val if val == VDSO_CLOCKMODE::VDSO_CLOCKMODE_NONE as i32=> {
-                    // No cycle->ns conversion; store direct monotonic ns.
-                    clk.mult = 0;
-                    clk.basetime[1].sec = mono_ns / NANOS_PER_SEC;
-                    clk.basetime[1].nsec = mono_ns % NANOS_PER_SEC;
-                    clk.cycle_last.store(0, Ordering::Relaxed);
-                }
-                _ => {
-                    // Unknown/unsupported clock mode; treat like NONE.
-                    clk.mult = 0;
-                    clk.basetime[1].sec = mono_ns / NANOS_PER_SEC;
-                    clk.basetime[1].nsec = mono_ns % NANOS_PER_SEC;
-                    clk.cycle_last.store(0, Ordering::Relaxed);
-                }
             }
-
-            // Update realtime and boottime entries.
-            clk.basetime[0].sec = wall_ns / NANOS_PER_SEC;
-            clk.basetime[0].nsec = wall_ns % NANOS_PER_SEC;
-            clk.basetime[7].sec = clk.basetime[1].sec;
-            clk.basetime[7].nsec = clk.basetime[1].nsec;
-
-            if clk.seq.load(Ordering::Relaxed) < 10 {
-                let cycle_val = clk.cycle_last.load(Ordering::Relaxed);
-                log::trace!(
-                    "vDSO update: seq={}, cycle_last={}, mono_ns={}, mult={}, shift={}",
-                    clk.seq.load(Ordering::Relaxed),
-                    cycle_val,
-                    mono_ns,
-                    clk.mult,
-                    clk.shift
-                );
-            }
-
-            clk.write_seqcount_end();
         }
+
+        val if val == VdsoClockMode::None as i32 => {
+            // No cycle->ns conversion; store direct monotonic ns.
+            clk.mult = 0;
+            clk.basetime[1].sec = mono_ns / NANOS_PER_SEC;
+            clk.basetime[1].nsec = mono_ns % NANOS_PER_SEC;
+            clk.cycle_last.store(0, Ordering::Relaxed);
+        }
+        _ => {
+            // Unknown/unsupported clock mode; treat like NONE.
+            clk.mult = 0;
+            clk.basetime[1].sec = mono_ns / NANOS_PER_SEC;
+            clk.basetime[1].nsec = mono_ns % NANOS_PER_SEC;
+            clk.cycle_last.store(0, Ordering::Relaxed);
+        }
+    }
+
+    // Update realtime and boottime entries.
+    let shift = clk.shift;
+    clk.basetime[0].sec = wall_ns / NANOS_PER_SEC;
+    clk.basetime[0].nsec = (wall_ns % NANOS_PER_SEC) << shift;
+    clk.basetime[7].sec = clk.basetime[1].sec;
+    clk.basetime[7].nsec = clk.basetime[1].nsec;
+
+    if clk.seq.load(Ordering::Relaxed) < 10 {
+        let cycle_val = clk.cycle_last.load(Ordering::Relaxed);
+        log::trace!(
+            "vDSO update: seq={}, cycle_last={}, mono_ns={}, mult={}, shift={}",
+            clk.seq.load(Ordering::Relaxed),
+            cycle_val,
+            mono_ns,
+            clk.mult,
+            clk.shift
+        );
     }
 }
 
@@ -270,9 +358,17 @@ pub fn vdso_data_paddr() -> usize {
     virt_to_phys(data_ptr.into()).into()
 }
 
-
 /// Load vDSO into the given user address space and update auxv accordingly.
-pub fn prepare_vdso_pages(vdso_kstart: usize, vdso_kend: usize) -> AxResult<(axplat::mem::PhysAddr, &'static [u8], usize, usize, Option<(usize, usize)>)> {
+pub fn prepare_vdso_pages(
+    vdso_kstart: usize,
+    vdso_kend: usize,
+) -> AxResult<(
+    axplat::mem::PhysAddr,
+    &'static [u8],
+    usize,
+    usize,
+    Option<(usize, usize)>,
+)> {
     let orig_vdso_len = vdso_kend - vdso_kstart;
     let orig_page_off = vdso_kstart & (PAGE_SIZE_4K - 1);
 
@@ -280,7 +376,8 @@ pub fn prepare_vdso_pages(vdso_kstart: usize, vdso_kend: usize) -> AxResult<(axp
         // Already page aligned: use original memory region directly.
         let vdso_paddr_page = virt_to_phys(vdso_kstart.into());
         let vdso_size = (vdso_kend - vdso_kstart + PAGE_SIZE_4K - 1) & !(PAGE_SIZE_4K - 1);
-        let vdso_bytes = unsafe { core::slice::from_raw_parts(vdso_kstart as *const u8, orig_vdso_len) };
+        let vdso_bytes =
+            unsafe { core::slice::from_raw_parts(vdso_kstart as *const u8, orig_vdso_len) };
         Ok((vdso_paddr_page, vdso_bytes, vdso_size, 0usize, None))
     } else {
         let total_size = orig_vdso_len + orig_page_off;
@@ -302,7 +399,13 @@ pub fn prepare_vdso_pages(vdso_kstart: usize, vdso_kend: usize) -> AxResult<(axp
         let alloc_vaddr = alloc_ptr as usize;
         let vdso_paddr_page = virt_to_phys(alloc_vaddr.into());
         let vdso_bytes = unsafe { core::slice::from_raw_parts(dest as *const u8, orig_vdso_len) };
-        Ok((vdso_paddr_page, vdso_bytes, vdso_size, orig_page_off, Some((alloc_vaddr, num_pages))))
+        Ok((
+            vdso_paddr_page,
+            vdso_bytes,
+            vdso_size,
+            orig_page_off,
+            Some((alloc_vaddr, num_pages)),
+        ))
     }
 }
 
@@ -330,5 +433,29 @@ impl Drop for VdsoAllocGuard {
                 unsafe { dealloc(vaddr as *mut u8, layout) };
             }
         }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+/// Update vDSO data for x86_64
+pub fn update_vdso_x86(data: &mut VdsoData) {
+    use core::arch::x86_64::_rdtsc;
+    let cycle_now = unsafe { _rdtsc() };
+
+    let wall_ns = wall_time_nanos();
+    let mono_ns = monotonic_time_nanos();
+
+    let ticks_per_sec = nanos_to_ticks(NANOS_PER_SEC);
+    let mult_shift = clocks_calc_mult_shift(ticks_per_sec, NANOS_PER_SEC, 10);
+
+    for (_i, clk) in data.clocks.iter_mut().enumerate() {
+        clk.write_seqcount_begin();
+
+        clk.version = 1;
+        clk.clock_mode = VdsoClockMode::Tsc as i32;
+        clk.mask = u64::MAX;
+        update_vdso_clock(clk, cycle_now, wall_ns, mono_ns, mult_shift);
+
+        clk.write_seqcount_end();
     }
 }

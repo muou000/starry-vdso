@@ -11,7 +11,3 @@ pub const VVAR_PAGES: usize = 5;
 
 #[cfg(target_arch = "loongarch64")]
 pub const VVAR_PAGES: usize = 44;
-
-// Fallback to 1 page for unknown architectures
-#[cfg(not(any(target_arch = "riscv64", target_arch = "x86_64", target_arch = "aarch64", target_arch = "loongarch64")))]
-pub const VVAR_PAGES: usize = 1;
