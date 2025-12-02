@@ -36,5 +36,3 @@ pub enum ClockMode {
     None,
     Csr,
 }
-
-

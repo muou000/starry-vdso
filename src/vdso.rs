@@ -20,7 +20,8 @@ const PAGE_SIZE_4K: usize = 4096;
 /// Number of clock bases
 const VDSO_BASES: usize = 16;
 
-/// Compute multiplier and shift to convert from timer_frequency to nanos_per_sec.
+/// Compute multiplier and shift to convert from timer_frequency to
+/// nanos_per_sec.
 pub fn clocks_calc_mult_shift(from: u64, to: u64, maxsec: u32) -> (u32, u32) {
     // sftacc starts at 32 and is reduced based on the maximum conversion range
     let mut tmp = ((maxsec as u64).wrapping_mul(from)) >> 32;
@@ -122,6 +123,13 @@ pub struct VdsoData {
     pub hrtimer_res: u32,
 }
 
+#[cfg(target_arch = "x86_64")]
+impl Default for VdsoData {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(target_arch = "aarch64")]
 #[repr(C)]
 #[repr(align(4096))]
@@ -133,6 +141,13 @@ pub struct VdsoData {
     pub hrtimer_res: u32,
     pub _pad: [u8; 4096 - 1956],
     pub clock_page1: VdsoClock,
+}
+
+#[cfg(target_arch = "aarch64")]
+impl Default for VdsoData {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
@@ -187,17 +202,14 @@ impl VdsoData {
         #[cfg(any(target_arch = "loongarch64", target_arch = "riscv64"))]
         {
             update_vdso(self);
-            return;
         }
         #[cfg(target_arch = "x86_64")]
         {
             update_vdso_x86(self);
-            return;
         }
         #[cfg(target_arch = "aarch64")]
         {
             update_vdso_aarch(self);
-            return;
         }
     }
 }
@@ -237,7 +249,8 @@ pub fn update_vdso_clock(
     let is_counter_mode = clk.clock_mode != (ClockMode::None as i32);
 
     if is_counter_mode {
-        // Counter-based modes: Tsc (x86_64), Csr (riscv64/loongarch64), Cntvct (aarch64)
+        // Counter-based modes: Tsc (x86_64), Csr (riscv64/loongarch64), Cntvct
+        // (aarch64)
         if prev_cycle == 0 {
             let (mult, shift) = mult_shift;
             clk.mult = mult;
@@ -321,17 +334,17 @@ pub fn vdso_data_paddr() -> usize {
     virt_to_phys(data_ptr.into()).into()
 }
 
-/// Load vDSO into the given user address space and update auxv accordingly.
-pub fn prepare_vdso_pages(
-    vdso_kstart: usize,
-    vdso_kend: usize,
-) -> AxResult<(
+/// Information about loaded vDSO pages for userspace mapping and auxv update.
+pub type VdsoPageInfo = (
     axplat::mem::PhysAddr,
     &'static [u8],
     usize,
     usize,
     Option<(usize, usize)>,
-)> {
+);
+
+/// Load vDSO into the given user address space and update auxv accordingly.
+pub fn prepare_vdso_pages(vdso_kstart: usize, vdso_kend: usize) -> AxResult<VdsoPageInfo> {
     let orig_vdso_len = vdso_kend - vdso_kstart;
     let orig_page_off = vdso_kstart & (PAGE_SIZE_4K - 1);
 
@@ -410,7 +423,7 @@ pub fn update_vdso_x86(data: &mut VdsoData) {
     let ticks_per_sec = nanos_to_ticks(NANOS_PER_SEC);
     let mult_shift = clocks_calc_mult_shift(ticks_per_sec, NANOS_PER_SEC, 10);
 
-    for (_i, clk) in data.clocks.iter_mut().enumerate() {
+    for clk in data.clocks.iter_mut() {
         clk.write_seqcount_begin();
 
         clk.clock_mode = ClockMode::Tsc as i32;

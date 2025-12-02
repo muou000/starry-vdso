@@ -39,8 +39,15 @@ pub static mut VDSO_START: usize = 0;
 #[unsafe(no_mangle)]
 pub static mut VDSO_END: usize = 0;
 
-/// Initialize vDSO start/end address symbols at runtime; call this very early.
-/// Returns (start_address, end_address) in kernel virtual memory.
+/// Initialize vDSO start/end address symbols at runtime.
+///
+/// # Safety
+///
+/// This function is unsafe because it accesses and modifies global mutable
+/// static variables (`VDSO_START` and `VDSO_END`) and relies on the correct
+/// initialization of external symbols (`vdso_start` and `vdso_end`). The caller
+/// must ensure that these symbols are valid and that concurrent access is
+/// properly synchronized.
 pub unsafe fn init_vdso_symbols() -> (usize, usize) {
     unsafe extern "C" {
         static vdso_start: usize;
