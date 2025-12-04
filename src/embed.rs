@@ -19,43 +19,14 @@ macro_rules! include_vdso {
     };
 }
 
-#[cfg(target_arch = "riscv64")]
-global_asm!(include_vdso!("rv"));
-
-#[cfg(target_arch = "loongarch64")]
-global_asm!(include_vdso!("la"));
-
-#[cfg(target_arch = "aarch64")]
-global_asm!(include_vdso!("aarch"));
-
-#[cfg(target_arch = "x86_64")]
-global_asm!(include_vdso!("x86"));
-
-#[used]
-#[unsafe(no_mangle)]
-pub static mut VDSO_START: usize = 0;
-
-#[used]
-#[unsafe(no_mangle)]
-pub static mut VDSO_END: usize = 0;
-
-/// Initialize vDSO start/end address symbols at runtime.
-///
-/// # Safety
-///
-/// This function is unsafe because it accesses and modifies global mutable
-/// static variables (`VDSO_START` and `VDSO_END`) and relies on the correct
-/// initialization of external symbols (`vdso_start` and `vdso_end`). The caller
-/// must ensure that these symbols are valid and that concurrent access is
-/// properly synchronized.
-pub unsafe fn init_vdso_symbols() -> (usize, usize) {
-    unsafe extern "C" {
-        static vdso_start: usize;
-        static vdso_end: usize;
-    }
-    unsafe {
-        VDSO_START = &vdso_start as *const usize as usize;
-        VDSO_END = &vdso_end as *const usize as usize;
-        (VDSO_START, VDSO_END)
+cfg_if::cfg_if! {
+    if #[cfg(target_arch = "x86_64")] {
+        global_asm!(include_vdso!("x86_64"));
+    } else if #[cfg(target_arch = "riscv64")] {
+        global_asm!(include_vdso!("riscv"));
+    } else if #[cfg(target_arch = "aarch64")]{
+        global_asm!(include_vdso!("aarch64"));
+    } else if #[cfg(any(target_arch = "loongarch64"))] {
+        global_asm!(include_vdso!("loongarch64"));
     }
 }
